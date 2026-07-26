@@ -1,11 +1,12 @@
-# ESP32-C3 Projects
+# ESP32 Projects
 
-ESP-IDF projects for two ESP32-C3 board variants.
+ESP-IDF projects for three board variants.
 
-| Board | Directory | Flash | USB | LED |
-|-------|-----------|-------|-----|-----|
-| SuperMini | `c3-supermini/` | Embedded 4 MB (in-package) | Native USB-Serial-JTAG | GPIO 8 (1 LED) |
-| Classic | `c3-classic/` | External 4 MB (onboard chip) | CH343 UART bridge | GPIO 12 (2 LEDs) |
+| Board | Directory | SoC | Flash | PSRAM | USB | LED |
+|-------|-----------|-----|-------|-------|-----|-----|
+| SuperMini | `c3-supermini/` | ESP32-C3 | Embedded 4 MB | None | Native USB-Serial-JTAG | GPIO 8 (1 LED) |
+| Classic | `c3-classic/` | ESP32-C3 | External 4 MB | None | CH343 UART bridge | GPIO 12 (2 LEDs) |
+| S3-N16R8 | `s3-n16r8/` | ESP32-S3 | External 16 MB (QIO) | 8 MB (PSRAM) | CH343 UART bridge | WS2812 RGB on GPIO 48 |
 
 ## Hardware reference
 
@@ -56,6 +57,38 @@ Minimal LED blink on GPIO 12, toggling every 500 ms. Good starting point for ver
 
 **Worth reading:** `main/main.c` — clean example of GPIO output + FreeRTOS task delay + ESP logging.
 
+## S3-N16R8 (`s3-n16r8/`)
+
+Ported from C3 Classic, adapted for the ESP32-S3 N16R8 module (16 MB flash, 8 MB PSRAM).
+
+| Project | Path | Indicator | Notes |
+|---------|------|-----------|-------|
+| `s3_empty` | `s3-n16r8/s3_empty/` | WS2812 RGB | Color-cycle demo on GPIO 48 |
+| `dhry_240m` | `s3-n16r8/dhry_240m/` | WS2812 RGB | Dhrystone benchmark (green during run) |
+| `coremark_240m` | `s3-n16r8/coremark_240m/` | (none) | CoreMark benchmark |
+| `wifi_con_test` | `s3-n16r8/wifi_con_test/` | WS2812 RGB | WiFi scan, connect, green/red blink |
+
+### Key differences from C3
+
+| Aspect | C3 (RISC-V) | S3-N16R8 (Xtensa LX7) |
+|--------|-------------|----------------------|
+| CPU | Single-core RISC-V @ 160 MHz | Dual-core Xtensa LX7 @ 240 MHz |
+| Toolchain | `riscv32-esp-elf-gcc` | `xtensa-esp32s3-elf-gcc` |
+| Flash | 4 MB (DIO, 40 MHz) | 16 MB (QIO, 80 MHz) |
+| PSRAM | None | 8 MB embedded PSRAM (AP_3v3) |
+| LED | Simple GPIO blink (on/off) | WS2812 RGB via RMT (GPIO 48) |
+| USB bridge | CH343 on C3 Classic | CH343 (separate port from native USB) |
+
+### WS2812 LED driver
+
+All S3 projects that use an indicator share `ws2812_led.c` / `ws2812_led.h` — an RMT-based driver for the WS2812 RGB LED on GPIO 48. The driver uses the ESP-IDF RMT TX channel with a copy encoder at 10 MHz resolution.
+
+```c
+ws2812_init(48);
+ws2812_set_rgb(255, 0, 0);  // red
+ws2812_clear();              // off
+```
+
 ### `c3-supermini/c3_oled/`
 
 OLED display demo that drives a 72x40 SSD1306-like display over both software bit-bang I2C and hardware I2C (ESP-IDF i2c_master driver), alternating every 10 seconds.
@@ -86,27 +119,32 @@ Dhrystone 2.1 benchmark ported from RP2040, running on ESP32-C3 at 160 MHz. Prin
 ## Dependencies
 
 - ESP-IDF **v6.0.2** (path: `\espidf\.espressif\v6.0.2\esp-idf`)
-- Target: `esp32c3`
+- Targets: `esp32c3` (C3 boards), `esp32s3` (S3-N16R8)
 
 ## Building
 
 ```bash
+# C3 project (RISC-V)
 cd c3-supermini/c3_oled
 idf.py build
 idf.py -p COM33 flash monitor
-```
 
-Or on Windows, run `c3-supermini\c3_oled\build_oled.bat` for the OLED project.
+# S3-N16R8 project (Xtensa)
+cd s3-n16r8/s3_empty
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COM35 flash monitor
+```
 
 ## Clock Configuration
 
-The projects have **no explicit clock setup** — they use the ESP-IDF defaults configured via `menuconfig`:
+The C3 projects use 160 MHz (default); S3-N16R8 projects use 240 MHz.
 
-| Clock | Default | Config symbol |
-|-------|---------|---------------|
-| CPU | 160 MHz | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160` |
-| XTAL | 40 MHz | `CONFIG_XTAL_FREQ=40` |
-| APB | 80 MHz | Derived from CPU / 2 |
+| Clock | C3 default | S3 default | Config symbol |
+|-------|------------|------------|---------------|
+| CPU | 160 MHz | 240 MHz | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` |
+| XTAL | 40 MHz | 40 MHz | `CONFIG_XTAL_FREQ=40` |
+| APB | 80 MHz | 80 MHz | Derived from CPU / 2 |
 
 To change: `idf.py menuconfig` → Component config → ESP Timer → CPU frequency.
 
