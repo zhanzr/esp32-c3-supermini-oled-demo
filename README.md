@@ -1,22 +1,58 @@
-# ESP32-C3 Supermini Projects
+# ESP32-C3 Projects
 
-Three ESP-IDF projects for the ESP32-C3 Supermini board.
+ESP-IDF projects for two ESP32-C3 board variants.
 
-The board is `c3-supermini` (ESP32-C3 Supermini). All projects live under the `c3-supermini/` directory.
+| Board | Directory | Flash | USB | LED |
+|-------|-----------|-------|-----|-----|
+| SuperMini | `c3-supermini/` | Embedded 4 MB (in-package) | Native USB-Serial-JTAG | GPIO 8 (1 LED) |
+| Classic | `c3-classic/` | External 4 MB (onboard chip) | CH343 UART bridge | GPIO 12 (2 LEDs) |
 
-## Hardware
+## Hardware reference
+
+[ESP32-C3-Flash.md](ESP32-C3-Flash.md) — guide to verifying embedded flash and
+understanding flash variant differences.
+
+---
+
+## SuperMini (`c3-supermini/`)
 
 | Project | Path | GPIO | Connection |
 |---------|------|------|------------|
 | `c3_empty` | `c3-supermini/c3_empty/` | GPIO 8 | On-board LED |
 | `c3_oled` | `c3-supermini/c3_oled/` | GPIO 5 (SDA), GPIO 6 (SCL) | 0.42" 72x40 OLED (I2C addr 0x3C) |
-| `dhry_160m` | `c3-supermini/dhry_160m/` | (none) | Dhrystone 2.1 benchmark at 160 MHz |
+| `dhry_160m` | `c3-supermini/dhry_160m/` | GPIO 8 | LED activity indicator |
+| `wifi_con_test` | `c3-supermini/wifi_con_test/` | GPIO 8 | LED blink + WiFi |
 
-## Projects
+## Classic (`c3-classic/`)
 
-### `c3-supermini/c3_empty/`
+Same projects as SuperMini, ported for the C3 Classic board.
 
-Minimal LED blink on GPIO 8, toggling every 500 ms. Good starting point for verifying a new board.
+| Project | Path | GPIO | Notes |
+|---------|------|------|-------|
+| `c3_empty` | `c3-classic/c3_empty/` | GPIO 12 | LED blink (was GPIO 8) |
+| `dhry_160m` | `c3-classic/dhry_160m/` | GPIO 12 | Dhrystone benchmark w/ LED |
+| `coremark_160m` | `c3-classic/coremark_160m/` | (none) | CoreMark benchmark |
+| `wifi_con_test` | `c3-classic/wifi_con_test/` | GPIO 12 | WiFi scan, connect, LED |
+
+### Key differences from SuperMini
+
+| Aspect | SuperMini | Classic |
+|--------|-----------|---------|
+| Flash | Embedded 4 MB (in-package) | External 4 MB (separate chip) |
+| USB connection | Native USB-Serial-JTAG (no extra chip) | CH343 USB-UART bridge |
+| Console | UART0 via native USB | UART0 via CH343 (GPIO 20/21) |
+| Onboard LED | 1 LED on GPIO 8 | 2 LEDs on GPIO 12, GPIO 13 |
+| OLED | GPIO 5/6 (I2C) | Not present |
+| Flash pin usage | None (all GPIOs free) | SPI bus occupies GPIOs 10–17 |
+
+> **Note:** On the Classic board, the external SPI flash uses GPIOs 10–17, so
+> those pins are **not available** for other uses.
+
+---
+
+### `c3-classic/c3_empty/`
+
+Minimal LED blink on GPIO 12, toggling every 500 ms. Good starting point for verifying a new board.
 
 **Worth reading:** `main/main.c` — clean example of GPIO output + FreeRTOS task delay + ESP logging.
 
