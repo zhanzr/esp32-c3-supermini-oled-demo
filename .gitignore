@@ -53,6 +53,9 @@ Desktop.ini
 # ESP-IDF tools
 .espressif/
 
+# WiFi credentials (never commit)
+**/wifi_config.h
+
 # Compilation database
 compile_commands.json
 .clangd/
