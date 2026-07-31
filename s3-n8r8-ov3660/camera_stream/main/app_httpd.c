@@ -6,7 +6,10 @@
 #include "esp_timer.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
+#include "esp_heap_caps.h"
+#include "img_converters.h"
 #include "app_httpd.h"
+#include "classifier.h"
 
 static const char *TAG = "httpd";
 
@@ -25,6 +28,7 @@ static const char *TAG = "httpd";
 static volatile int g_streaming = 0;
 static float g_fps = 0.0f;
 static int g_quality = 12;
+static volatile int g_detect = 0;   /* draw boxes + classify on the stream */
 
 static const struct {
     const char *name;
@@ -68,8 +72,13 @@ static const char g_index_html[] =
 "<button id=\"btnStart\">Start</button>\n"
 "<button id=\"btnStop\" style=\"display:none\">Stop</button>\n"
 "<button id=\"btnGrab\" style=\"display:none\">Grab</button>\n"
+"<button id=\"btnClass\">Classify</button>\n"
+"<label><input type=\"checkbox\" id=\"det\">Draw boxes</label>\n"
 "<span>FPS: <b id=\"fps\">-</b></span>\n"
 "<span>Status: <b id=\"stat\">idle</b></span>\n"
+"</div>\n"
+"<div class=\"card\">\n"
+"<b>Detection:</b> <span id=\"detres\">-</span>\n"
 "</div>\n"
 "<div class=\"card\">\n"
 "<label>Resolution:\n"
@@ -101,7 +110,8 @@ static const char g_index_html[] =
 "    f=document.getElementById('fps'),t=document.getElementById('stat'),\n"
 "    r=document.getElementById('res'),q=document.getElementById('q'),\n"
 "    qv=document.getElementById('qval'),p=document.getElementById('pix'),\n"
-"    rot=document.getElementById('rot');\n"
+"    rot=document.getElementById('rot'),det=document.getElementById('det'),\n"
+"    dr=document.getElementById('detres'),bc=document.getElementById('btnClass');\n"
 "var streaming=false;\n"
 "var STREAM_URL='http://'+location.hostname+':81/stream';\n"
 "function show(el){el.style.display='inline-block';}\n"
@@ -124,20 +134,33 @@ static const char g_index_html[] =
 "  refreshButtons();\n"
 "}\n"
 "function applyCfg(){\n"
-"  fetch('/control?res='+encodeURIComponent(r.value)+'&quality='+q.value+'&pixfmt='+encodeURIComponent(p.value)+'&rot='+encodeURIComponent(rot.value))\n"
+"  fetch('/control?res='+encodeURIComponent(r.value)+'&quality='+q.value+'&pixfmt='+encodeURIComponent(p.value)+'&rot='+encodeURIComponent(rot.value)+'&detect='+(det.checked?1:0))\n"
 "    .then(function(){t.textContent='applied';});\n"
 "  if(streaming){stopStream();startStream();}\n"
+"}\n"
+"function classify(){\n"
+"  bc.textContent='Classifying...';t.textContent='classifying';\n"
+"  fetch('/classify?ts='+Date.now()).then(function(x){return x.json();}).then(function(j){\n"
+"    if(!j.dets||!j.dets.length){dr.textContent='nothing detected';t.textContent='classify done';}\n"
+"    else{\n"
+"      var parts=[];\n"
+"      for(var i=0;i<j.dets.length;i++){var d=j.dets[i];parts.push(d.color+' '+d.shape);}\n"
+"      dr.textContent=parts.join(', ');t.textContent='classify done';\n"
+"    }\n"
+"  }).catch(function(){dr.textContent='classify error';}).then(function(){bc.textContent='Classify';});\n"
 "}\n"
 "bs.onclick=function(){if(m.value!=='stream'){m.value='stream';setMode();}startStream();};\n"
 "bp.onclick=function(){stopStream();};\n"
 "bg.onclick=grab;\n"
+"bc.onclick=classify;\n"
+"det.onchange=function(){applyCfg();};\n"
 "q.oninput=function(){qv.textContent=q.value;};\n"
 "m.onchange=setMode;\n"
 "rot.onchange=function(){applyCfg();};\n"
 "setMode();\n"
 "setInterval(function(){\n"
 "  fetch('/status').then(function(x){return x.json();}).then(function(j){\n"
-"    if(j.streaming){f.textContent=j.fps.toFixed(1);t.textContent='streaming '+j.w+'x'+j.h+' '+(j.format===0?'RGB565':'JPEG');}\n"
+"    if(j.streaming){f.textContent=j.fps.toFixed(1);t.textContent='streaming '+j.w+'x'+j.h+' '+(j.format===0?'RGB565':'JPEG')+(j.detect?' [detect]':'');}\n"
 "    else f.textContent='-';\n"
 "  }).catch(function(){});\n"
 "},1000);\n"
@@ -156,6 +179,85 @@ static esp_err_t handler_favicon(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "204 No Content");
     return httpd_resp_sendstr(req, "");
+}
+
+/* -------------------------------------------------------------------------
+ * Detection overlay: RGB565 drawing helpers
+ * ---------------------------------------------------------------------- */
+static const uint16_t g_color_rgb565[6] = {
+    0xF800,  /* red    */
+    0xFD20,  /* orange */
+    0xFFE0,  /* yellow */
+    0x07E0,  /* green  */
+    0x001F,  /* blue   */
+    0xF81F,  /* purple */
+};
+
+static void draw_rect(uint16_t *rgb, int W, int H, int x, int y, int w, int h,
+                      uint16_t color)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > W) w = W - x;
+    if (y + h > H) h = H - y;
+    if (w <= 0 || h <= 0) return;
+
+    for (int j = y; j < y + h; j++) {
+        for (int i = x; i < x + w; i++) {
+            rgb[j * W + i] = color;
+        }
+    }
+}
+
+static void draw_box(uint16_t *rgb, int W, int H, int x, int y, int w, int h,
+                     uint16_t color)
+{
+    const int t = 2;
+    draw_rect(rgb, W, H, x, y, w, t, color);                /* top    */
+    draw_rect(rgb, W, H, x, y + h - t, w, t, color);        /* bottom */
+    draw_rect(rgb, W, H, x, y, t, h, color);                /* left   */
+    draw_rect(rgb, W, H, x + w - t, y, t, h, color);        /* right  */
+}
+
+/* Capture a frame, run detection, draw boxes, return as a JPEG buffer.
+ * Caller owns *jpg_buf (free it). */
+static esp_err_t stream_detect_frame(camera_fb_t *fb, uint8_t **jpg_buf,
+                                     size_t *jpg_len)
+{
+    int W = fb->width, H = fb->height;
+    uint8_t *rgb = heap_caps_malloc((size_t)W * H * 2, MALLOC_CAP_SPIRAM);
+    if (!rgb) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (fb->format == PIXFORMAT_RGB565) {
+        memcpy(rgb, fb->buf, (size_t)W * H * 2);
+    } else if (fb->format == PIXFORMAT_JPEG) {
+        if (!jpg2rgb565(fb->buf, fb->len, rgb, JPG_SCALE_NONE)) {
+            ESP_LOGE(TAG, "JPEG decode failed");
+            heap_caps_free(rgb);
+            return ESP_FAIL;
+        }
+    } else {
+        heap_caps_free(rgb);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    classify_result_t res;
+    if (classify_rgb565((const uint16_t *)rgb, W, H, 2, &res) == ESP_OK) {
+        for (int i = 0; i < res.count; i++) {
+            /* dets[] is ordered by color class 0..5 -> red..purple */
+            classify_det_t *d = &res.dets[i];
+            uint16_t col = g_color_rgb565[i];
+            draw_box((uint16_t *)rgb, W, H, d->x, d->y, d->w, d->h, col);
+            draw_rect((uint16_t *)rgb, W, H, d->x, d->y, 24, 8, col);
+        }
+    }
+
+    bool ok = fmt2jpg(rgb, (size_t)W * H * 2, W, H, PIXFORMAT_RGB565, 70,
+                      jpg_buf, jpg_len);
+    heap_caps_free(rgb);
+    return ok ? ESP_OK : ESP_FAIL;
 }
 
 /* -------------------------------------------------------------------------
@@ -190,7 +292,13 @@ static esp_err_t handler_stream(httpd_req_t *req)
 
         uint8_t *jpg_buf = NULL;
         size_t jpg_len = 0;
-        if (fb->format != PIXFORMAT_JPEG) {
+        if (g_detect) {
+            if (stream_detect_frame(fb, &jpg_buf, &jpg_len) != ESP_OK) {
+                ESP_LOGE(TAG, "Detection/encode failed");
+                esp_camera_fb_return(fb);
+                break;
+            }
+        } else if (fb->format != PIXFORMAT_JPEG) {
             if (!frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
                 ESP_LOGE(TAG, "JPEG compression failed");
                 esp_camera_fb_return(fb);
@@ -215,8 +323,8 @@ static esp_err_t handler_stream(httpd_req_t *req)
             res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
         }
 
-        if (fb->format != PIXFORMAT_JPEG) {
-            free(jpg_buf);
+        if (g_detect || fb->format != PIXFORMAT_JPEG) {
+            free(jpg_buf);   /* detection path always allocates its own JPEG */
         }
         esp_camera_fb_return(fb);
         if (res != ESP_OK) {
@@ -292,8 +400,47 @@ static esp_err_t handler_status(httpd_req_t *req)
 
     char buf[160];
     int len = snprintf(buf, sizeof(buf),
-                       "{\"streaming\":%d,\"fps\":%.1f,\"w\":%d,\"h\":%d,\"format\":%d,\"quality\":%d}",
-                       (int)g_streaming, (double)g_fps, w, h, fmt, g_quality);
+                       "{\"streaming\":%d,\"fps\":%.1f,\"w\":%d,\"h\":%d,\"format\":%d,\"quality\":%d,\"detect\":%d}",
+                       (int)g_streaming, (double)g_fps, w, h, fmt, g_quality, (int)g_detect);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, len);
+}
+
+/* -------------------------------------------------------------------------
+ * /classify -> JSON list of detected color+shape objects in one frame
+ * ---------------------------------------------------------------------- */
+static esp_err_t handler_classify(httpd_req_t *req)
+{
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        ESP_LOGE(TAG, "Camera capture failed");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    classify_result_t res;
+    esp_err_t err = classify_frame(fb, 2, &res);
+    esp_camera_fb_return(fb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Classify failed: %s", esp_err_to_name(err));
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    char buf[1024];
+    int len = snprintf(buf, sizeof(buf), "{\"count\":%d,\"dets\":[", res.count);
+    for (int i = 0; i < res.count && len < (int)sizeof(buf); i++) {
+        classify_det_t *d = &res.dets[i];
+        len += snprintf(buf + len, sizeof(buf) - len,
+                        "%s{\"color\":\"%s\",\"shape\":\"%s\",\"area\":%u,"
+                        "\"bbox\":[%d,%d,%d,%d],\"cx\":%d,\"cy\":%d,"
+                        "\"fill\":%.2f,\"aspect\":%.2f}",
+                        i ? "," : "", d->color, d->shape, (unsigned)d->area,
+                        d->x, d->y, d->w, d->h, d->cx, d->cy,
+                        (double)d->fill, (double)d->aspect);
+    }
+    len += snprintf(buf + len, sizeof(buf) - len, "]}");
+
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, len);
 }
@@ -360,6 +507,10 @@ static esp_err_t handler_control(httpd_req_t *req)
         s->set_vflip(s, vflip);
         s->set_hmirror(s, hmirror);
     }
+    if (httpd_query_key_value(query, "detect", val, sizeof(val)) == ESP_OK) {
+        g_detect = (atoi(val) != 0) ? 1 : 0;
+        ESP_LOGI(TAG, "Detection: %s", g_detect ? "ON" : "OFF");
+    }
 
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
@@ -394,6 +545,7 @@ esp_err_t start_camera_server(void)
     register_uri(main_server, "/capture", handler_capture);
     register_uri(main_server, "/status", handler_status);
     register_uri(main_server, "/control", handler_control);
+    register_uri(main_server, "/classify", handler_classify);
     ESP_LOGI(TAG, "Main server started on port %d", MAIN_SERVER_PORT);
 
     /* Stream server (port 81): MJPEG only, so it can block forever without

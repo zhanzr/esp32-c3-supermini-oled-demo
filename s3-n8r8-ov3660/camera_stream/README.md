@@ -51,9 +51,32 @@ stream_cfg.ctrl_port   = STREAM_SERVER_PORT + 32768;
 - **FPS** — `GET /status` polled every second while streaming:
   `{"streaming":1,"fps":13.4,"w":320,"h":240,"format":4,"quality":12}`.
 - **Apply controls** (`GET /control`): `res` (QQVGA..QXGA), `quality` (0-63),
-  `pixfmt` (JPEG | RGB565), `rot` (0/90/180/270 via vflip/hmirror).
+  `pixfmt` (JPEG | RGB565), `rot` (0/90/180/270 via vflip/hmirror),
+  `detect` (1/0, stream overlay).
   Note: 90/270 rotate in place; width/height are not swapped in `/status`.
+- **Classify** button (`GET /classify`) — one-frame HSV color + shape
+  classification, returns JSON:
+  `{"count":1,"dets":[{"color":"green","shape":"triangle","area":471,"bbox":[22,0,98,42],...}]}`.
+  Results are also drawn on the live stream when "Draw boxes" (detect) is on.
 - Non-JPEG capture/stream is JPEG-compressed on the fly (`frame2jpg`, q80).
+
+## Classifier (`classifier.c`)
+
+Classic computer vision, no training:
+
+- **Color**: RGB565 -> HSV (H 0-360, S/V 0-100) per pixel; 6 buckets
+  (red/orange/yellow/green/blue/purple) with `S>=40, V>=40` gating.
+- **Shape**: connected components (BFS flood fill, downscaled grid) per color;
+  bounding-box fill ratio (`area/(w*h)`) + aspect ratio picks
+  `bar`/`rect`/`circle`/`triangle`. Ideal values: circle 0.79, triangle 0.5,
+  axis-aligned square/rect 1.0.
+- Thresholds live at the top of `classifier.c` (`MIN_BLOB_FRAC`, HSV bounds,
+  fill-ratio cutoffs) — tune them for your lighting/objects.
+- Stream detection path (`stream_detect_frame`) decodes JPEG -> RGB565, runs
+  the classifier, draws boxes, re-encodes (~4-6 FPS at QVGA).
+
+The ML upgrade (TFLite Micro CNN, dataset prep, training) is documented in
+`ML_TFLITE.md`.
 
 ## Component & config
 
@@ -80,3 +103,5 @@ GET /control?res=VGA -> 200, status then reports 640x480
 
 FPS ~13 (QVGA JPEG); ~5-6 when streaming RGB565 (on-the-fly compression).
 Device IP is printed to the console on connect.
+
+Bottom line: QVGA for classic CV, VGA-JPEG + 96×96 int8 for TFLite. Both fit comfortably in the N8R8.
