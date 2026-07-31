@@ -7,7 +7,11 @@ ESP-IDF projects for three board variants.
 | SuperMini | `c3-supermini/` | ESP32-C3 | Embedded 4 MB | None | Native USB-Serial-JTAG | GPIO 8 (1 LED) |
 | Classic | `c3-classic/` | ESP32-C3 | External 4 MB | None | CH343 UART bridge | GPIO 12 (2 LEDs) |
 | S3-N16R8 | `s3-n16r8/` | ESP32-S3 | External 16 MB (QIO) | 8 MB (PSRAM) | CH343 UART bridge | WS2812 RGB on GPIO 48 |
+| S3-N8R8 OV3660 | `s3-n8r8-ov3660/` | ESP32-S3 | External 8 MB | 8 MB (PSRAM) | UART bridge | None (OV3660 camera) |
 | C6 SuperMini | `c6-supermini/` | ESP32-C6 | Embedded 4 MB | None | Native USB-Serial-JTAG | GPIO 15 + WS2812 GPIO 8 |
+
+> **Note:** The `ov3660_test` project reads the camera ID over SCCB (I2C on
+> GPIO 4/5) with XCLK generated on GPIO 15 via LEDC.
 
 ## Hardware reference
 
@@ -90,6 +94,31 @@ ws2812_set_rgb(255, 0, 0);  // red
 ws2812_clear();              // off
 ```
 
+## S3-N8R8 OV3660 (`s3-n8r8-ov3660/`)
+
+Ported from `s3-n16r8`, adapted for the ESP32-S3 N8R8 module (8 MB flash, 8 MB PSRAM) with an **OV3660 camera**. This board has **no GPIO LED and no WS2812 LED**, so all LED code was removed. LED-only projects just log the no-LED situation; the camera is only probed for its device ID so far (see `ov3660_test`).
+
+| Project | Path | Indicator | Notes |
+|---------|------|-----------|-------|
+| `s3_empty` | `s3-n8r8-ov3660/s3_empty/` | (none) | Logs board status + no-LED message |
+| `dhry_240m` | `s3-n8r8-ov3660/dhry_240m/` | (none) | Dhrystone benchmark |
+| `coremark_240m` | `s3-n8r8-ov3660/coremark_240m/` | (none) | CoreMark benchmark |
+| `wifi_con_test` | `s3-n8r8-ov3660/wifi_con_test/` | (none) | WiFi scan, connect |
+| `ov3660_test` | `s3-n8r8-ov3660/ov3660_test/` | (none) | Read OV3660 camera device ID over SCCB |
+
+> **Note:** The benchmark projects suspend the task watchdog only around each
+> benchmark run (`esp_task_wdt_deinit()` / `esp_task_wdt_init()`), so the WDT
+> stays active the rest of the time instead of being disabled globally.
+
+### Key differences from S3-N16R8
+
+| Aspect | S3-N16R8 | S3-N8R8 OV3660 |
+|--------|----------|----------------|
+| Flash | 16 MB | 8 MB |
+| LED | WS2812 RGB on GPIO 48 (via RMT) | None (no GPIO LED, no WS2812) |
+| Camera | None | OV3660 (not yet driven) |
+| Flash size config | `2MB` default | `8MB` (`CONFIG_ESPTOOLPY_FLASHSIZE`) |
+
 ## C6 SuperMini (`c6-supermini/`)
 
 ESP32-C6 RISC-V projects, ported from C3 SuperMini.
@@ -141,7 +170,7 @@ Dhrystone 2.1 benchmark ported from RP2040, running on ESP32-C3 at 160 MHz. Prin
 ## Dependencies
 
 - ESP-IDF **v6.0.2** (path: `\espidf\.espressif\v6.0.2\esp-idf`)
-- Targets: `esp32c3` (C3 boards), `esp32s3` (S3-N16R8), `esp32c6` (C6 SuperMini)
+- Targets: `esp32c3` (C3 boards), `esp32s3` (S3-N16R8, S3-N8R8 OV3660), `esp32c6` (C6 SuperMini)
 
 ## Building
 
@@ -151,6 +180,7 @@ Build manually with `idf.py build`, or use the auto-detect flash script:
 # Auto-detect port, build & flash
 .\flash.ps1 c6-supermini\c6_empty          # flash only
 .\flash.ps1 s3-n16r8\s3_empty -Monitor     # flash + monitor
+.\flash.ps1 s3-n8r8-ov3660\s3_empty        # S3-N8R8 OV3660 board
 .\flash.ps1 c3-supermini\c3_empty build    # build only
 
 # Manual (if auto-detect has multiple ports)
@@ -175,7 +205,7 @@ Additional commands:
 
 ## Clock Configuration
 
-C3 and C6 projects use 160 MHz; S3-N16R8 uses 240 MHz.
+C3 and C6 projects use 160 MHz; S3-N16R8 and S3-N8R8 OV3660 use 240 MHz.
 
 | Clock | C3 / C6 default | S3 default | Config symbol |
 |-------|-----------------|------------|---------------|
