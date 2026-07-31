@@ -89,6 +89,9 @@ static void wifi_init_sta(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    /* Modem-sleep power save (default WIFI_PS_MIN_MODEM) wakes the radio
+     * periodically and stalls MJPEG TX for hundreds of ms at a time (seen as
+     * send_max spikes and FPS collapses to 1-3). Disable it for a steady stream. */
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -105,9 +108,11 @@ static void wifi_init_sta(void)
     }
 }
 
+static camera_config_t s_camera_config;
+
 static void camera_init(void)
 {
-    camera_config_t camera_config = {
+    s_camera_config = (camera_config_t){
         .pin_pwdn     = CAM_PIN_PWDN,
         .pin_reset    = CAM_PIN_RESET,
         .pin_xclk     = CAM_PIN_XCLK,
@@ -135,7 +140,7 @@ static void camera_init(void)
         .grab_mode    = CAMERA_GRAB_LATEST,
     };
 
-    esp_err_t err = esp_camera_init(&camera_config);
+    esp_err_t err = esp_camera_init(&s_camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed: 0x%X (%s)", err, esp_err_to_name(err));
         return;
@@ -144,6 +149,9 @@ static void camera_init(void)
     sensor_t *s = esp_camera_sensor_get();
     if (s != NULL) {
         ESP_LOGI(TAG, "Sensor: pid=0x%X ver=0x%X slv=0x%02X", s->id.PID, s->id.VER, s->slv_addr);
+        ESP_LOGI(TAG, "Sensor defaults: aec=%d aec2(night)=%d agc=%d aec_value=%d",
+                 (int)s->status.aec, (int)s->status.aec2, (int)s->status.agc,
+                 (int)s->status.aec_value);
     }
 
     /* Warm up the JPEG pipeline: the first grab after init often has no SOI
@@ -157,11 +165,22 @@ static void camera_init(void)
     ESP_LOGI(TAG, "Camera init OK");
 }
 
+/* Reinit the camera with a new frame size / pixel format. cam_hal allocates
+ * its DMA frame buffer once at init (JPEG: w*h/5, RGB565: w*h*2), so a plain
+ * s->set_framesize() overflows the buffer at larger resolutions (FB-OVF).
+ * Reconfiguring deinit+init reallocates it for the new size. */
+esp_err_t camera_reconfigure(framesize_t frame_size, pixformat_t pixel_format)
+{
+    s_camera_config.frame_size = frame_size;
+    s_camera_config.pixel_format = pixel_format;
+    return esp_camera_reconfigure(&s_camera_config);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  ESP32-S3 N8R8 OV3660 Stream Server");
-    ESP_LOGI(TAG, "  XCLK=GPIO15 (20 MHz)  ANT=inserted");
+    ESP_LOGI(TAG, "  ESP32-S3 N16R8 OV5640 Stream Server");
+    ESP_LOGI(TAG, "  XCLK=GPIO15 (20 MHz)  ANT=PCB");
     ESP_LOGI(TAG, "========================================");
 
     esp_err_t err = nvs_flash_init();

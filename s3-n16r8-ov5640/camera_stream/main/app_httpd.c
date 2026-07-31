@@ -28,6 +28,9 @@ static const char *TAG = "httpd";
 static volatile int g_streaming = 0;
 static float g_fps = 0.0f;
 static int g_quality = 12;
+static int g_rot = 0;
+static framesize_t g_framesize = FRAMESIZE_QVGA;
+static pixformat_t g_pixfmt = PIXFORMAT_JPEG;
 static volatile int g_detect = 0;   /* draw boxes + classify on the stream */
 
 static const struct {
@@ -43,6 +46,8 @@ static const struct {
     { "SXGA",  FRAMESIZE_SXGA  },
     { "UXGA",  FRAMESIZE_UXGA  },
     { "QXGA",  FRAMESIZE_QXGA  },
+    { "QSXGA", FRAMESIZE_QSXGA },
+    { "5MP",   FRAMESIZE_5MP   },
     { NULL, 0 },
 };
 
@@ -52,7 +57,7 @@ static const struct {
 static const char g_index_html[] =
 "<!DOCTYPE html>\n"
 "<html><head><meta charset=\"utf-8\">\n"
-"<title>OV3660 Stream</title>\n"
+"<title>OV5640 Stream</title>\n"
 "<style>\n"
 "body{font-family:Segoe UI,Arial,sans-serif;background:#121212;color:#eee;margin:16px}\n"
 ".card{background:#1e1e1e;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:12px}\n"
@@ -64,7 +69,7 @@ static const char g_index_html[] =
 "#stream{display:none}\n"
 "#still{display:none}\n"
 "</style></head><body>\n"
-"<h2>ESP32-S3 N8R8 OV3660</h2>\n"
+"<h2>ESP32-S3 N16R8 OV5640</h2>\n"
 "<div class=\"card\">\n"
 "<label>Mode:\n"
 "<select id=\"mode\"><option value=\"stream\" selected>Stream</option><option value=\"static\">Static</option></select>\n"
@@ -92,6 +97,8 @@ static const char g_index_html[] =
 "<option value=\"SXGA\">SXGA 1280x1024</option>\n"
 "<option value=\"UXGA\">UXGA 1600x1200</option>\n"
 "<option value=\"QXGA\">QXGA 2048x1536</option>\n"
+"<option value=\"QSXGA\">QSXGA 2560x1920</option>\n"
+"<option value=\"5MP\">5MP 2592x1944</option>\n"
 "</select></label>\n"
 "<label>Rotation:\n"
 "<select id=\"rot\"><option value=\"0\" selected>0 deg</option><option value=\"90\">90 deg</option><option value=\"180\">180 deg</option><option value=\"270\">270 deg</option></select>\n"
@@ -276,6 +283,8 @@ static esp_err_t handler_stream(httpd_req_t *req)
 
     esp_err_t res = ESP_OK;
     bool first = true;
+    /* Per-second stall diagnostics: separates camera-side (fb_get) stalls
+     * from network-side (send) stalls. */
     int64_t grab_max = 0, send_max = 0;
     int n_frames = 0, n_slow_grab = 0, n_slow_send = 0;
     while (true) {
@@ -360,6 +369,8 @@ static esp_err_t handler_stream(httpd_req_t *req)
 
     g_streaming = 0;
     g_fps = 0.0f;
+    ESP_LOGI(TAG, "diag: stream ended after %d frames (grab_max=%dms send_max=%dms)",
+             n_frames, (int)(grab_max / 1000), (int)(send_max / 1000));
     return ESP_OK;   /* suppress "uri handler execution failed" on client disconnect */
 }
 
@@ -465,12 +476,6 @@ static esp_err_t handler_classify(httpd_req_t *req)
  * ---------------------------------------------------------------------- */
 static esp_err_t handler_control(httpd_req_t *req)
 {
-    sensor_t *s = esp_camera_sensor_get();
-    if (!s) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
     size_t qlen = httpd_req_get_url_query_len(req);
     if (qlen == 0) {
         httpd_resp_sendstr(req, "OK");
@@ -483,11 +488,16 @@ static esp_err_t handler_control(httpd_req_t *req)
     httpd_req_get_url_query_str(req, query, qlen + 1);
 
     char val[64];
+    framesize_t new_framesize = g_framesize;
+    pixformat_t new_pixfmt = g_pixfmt;
+    int new_rot = g_rot;
+    int new_quality = g_quality;
+
     if (httpd_query_key_value(query, "res", val, sizeof(val)) == ESP_OK) {
         for (int i = 0; g_res_map[i].name; i++) {
             if (strcmp(g_res_map[i].name, val) == 0) {
+                new_framesize = g_res_map[i].size;
                 ESP_LOGI(TAG, "Set framesize: %s", val);
-                s->set_framesize(s, g_res_map[i].size);
                 break;
             }
         }
@@ -496,35 +506,82 @@ static esp_err_t handler_control(httpd_req_t *req)
         int q = atoi(val);
         if (q < 0) q = 0;
         if (q > 63) q = 63;
-        g_quality = q;
+        new_quality = q;
         ESP_LOGI(TAG, "Set quality: %d", q);
-        s->set_quality(s, q);
     }
     if (httpd_query_key_value(query, "pixfmt", val, sizeof(val)) == ESP_OK) {
         if (strcmp(val, "RGB565") == 0) {
+            new_pixfmt = PIXFORMAT_RGB565;
             ESP_LOGI(TAG, "Set pixformat: RGB565");
-            s->set_pixformat(s, PIXFORMAT_RGB565);
         } else {
+            new_pixfmt = PIXFORMAT_JPEG;
             ESP_LOGI(TAG, "Set pixformat: JPEG");
-            s->set_pixformat(s, PIXFORMAT_JPEG);
         }
     }
     if (httpd_query_key_value(query, "rot", val, sizeof(val)) == ESP_OK) {
-        int rot = atoi(val);
-        int vflip = 0, hmirror = 0;
-        switch (rot) {
-            case 90:  vflip = 1; hmirror = 0; break;
-            case 180: vflip = 1; hmirror = 1; break;
-            case 270: vflip = 0; hmirror = 1; break;
-            default:  rot = 0;  break;
-        }
-        ESP_LOGI(TAG, "Set rotation: %d deg (vflip=%d hmirror=%d)", rot, vflip, hmirror);
-        s->set_vflip(s, vflip);
-        s->set_hmirror(s, hmirror);
+        new_rot = atoi(val);
+        ESP_LOGI(TAG, "Set rotation: %d deg", new_rot);
     }
     if (httpd_query_key_value(query, "detect", val, sizeof(val)) == ESP_OK) {
         g_detect = (atoi(val) != 0) ? 1 : 0;
         ESP_LOGI(TAG, "Detection: %s", g_detect ? "ON" : "OFF");
+    }
+
+    /* Changing resolution or pixel format requires a full camera reinit:
+     * cam_hal allocates its DMA frame buffer at init (JPEG: w*h/5, RGB565:
+     * w*h*2), so s->set_framesize() alone overflows it at larger sizes. */
+    if (new_framesize != g_framesize || new_pixfmt != g_pixfmt) {
+        ESP_LOGI(TAG, "Reconfiguring camera (%d -> %d, pixfmt %d -> %d)...",
+                 (int)g_framesize, (int)new_framesize, (int)g_pixfmt, (int)new_pixfmt);
+        esp_err_t err = camera_reconfigure(new_framesize, new_pixfmt);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Reconfigure failed: %s", esp_err_to_name(err));
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        g_framesize = new_framesize;
+        g_pixfmt = new_pixfmt;
+        /* Reinit resets all sensor settings to defaults -> re-apply them. */
+        new_quality = 12;
+        /* The first grab after a reinit often has no SOI marker (cam_hal
+         * NO-SOI) or can time out while the sensor settles at the new size.
+         * Warm up with a single discard frame so the next /capture or /stream
+         * is clean. One grab only: at the top resolutions the OV5640's encode
+         * can exceed the 4 s frame timeout, so we must not block the control
+         * handler for multiple timeouts. */
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (fb) {
+            esp_camera_fb_return(fb);
+            ESP_LOGI(TAG, "Reconfigure warmup frame captured");
+        } else {
+            ESP_LOGW(TAG, "Reconfigure warmup grab failed");
+        }
+    }
+
+    /* The OV5640's 5MP-class internal JPEG encoder at low quality values
+     * exceeds the driver's 4 s frame grab timeout (QSXGA/5MP stall). Force a
+     * higher (more compressed) quality when entering those sizes so they work.
+     */
+    if (g_framesize >= FRAMESIZE_QSXGA && new_quality < 30) {
+        new_quality = 30;
+        ESP_LOGI(TAG, "Raised quality to %d for %s", new_quality,
+                 g_framesize == FRAMESIZE_5MP ? "5MP" : "QSXGA");
+    }
+
+    sensor_t *s = esp_camera_sensor_get();
+    if (s) {
+        s->set_quality(s, new_quality);
+        g_quality = new_quality;
+        int vflip = 0, hmirror = 0;
+        switch (new_rot) {
+            case 90:  vflip = 1; hmirror = 0; break;
+            case 180: vflip = 1; hmirror = 1; break;
+            case 270: vflip = 0; hmirror = 1; break;
+            default:  new_rot = 0; break;
+        }
+        g_rot = new_rot;
+        s->set_vflip(s, vflip);
+        s->set_hmirror(s, hmirror);
     }
 
     httpd_resp_sendstr(req, "OK");
