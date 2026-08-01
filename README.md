@@ -1,6 +1,6 @@
 # ESP32 Projects
 
-ESP-IDF projects for three board variants.
+ESP-IDF projects for six board variants.
 
 | Board | Directory | SoC | Flash | PSRAM | USB | LED |
 |-------|-----------|-----|-------|-------|-----|-----|
@@ -9,6 +9,7 @@ ESP-IDF projects for three board variants.
 | S3-N16R8 | `s3-n16r8/` | ESP32-S3 | External 16 MB (QIO) | 8 MB (PSRAM) | CH343 UART bridge | WS2812 RGB on GPIO 48 |
 | S3-N8R8 OV3660 | `s3-n8r8-ov3660/` | ESP32-S3 | External 8 MB | 8 MB (PSRAM) | UART bridge | None (OV3660 camera) |
 | C6 SuperMini | `c6-supermini/` | ESP32-C6 | Embedded 4 MB | None | Native USB-Serial-JTAG | GPIO 15 + WS2812 GPIO 8 |
+| Thing | `thing/` | ESP32 | External 4 MB | None | CP2102 UART bridge | GPIO 5 (1 blue LED) |
 
 > **Note:** The `ov3660_test` project reads the camera ID over SCCB (I2C on
 > GPIO 4/5) with XCLK generated on GPIO 15 via LEDC.
@@ -119,6 +120,33 @@ Ported from `s3-n16r8`, adapted for the ESP32-S3 N8R8 module (8 MB flash, 8 MB P
 | Camera | None | OV3660 (not yet driven) |
 | Flash size config | `2MB` default | `8MB` (`CONFIG_ESPTOOLPY_FLASHSIZE`) |
 
+## Thing (`thing/`)
+
+Ported from `s3-n16r8`, adapted for the **SparkFun ESP32 Thing** (classic ESP32, ESP32-D0WDQ6, 4 MB external flash, 26 MHz crystal). This board has no WS2812 LED, so all RMT/WS2812 code was removed and the on-board blue LED on **GPIO 5** is used as the indicator.
+
+| Project | Path | Indicator | Notes |
+|---------|------|-----------|-------|
+| `blink` | `thing/blink/` | GPIO 5 | LED blink (default LED) |
+| `dhry_240m` | `thing/dhry_240m/` | (none) | Dhrystone benchmark @ 240 MHz |
+| `coremark_240m` | `thing/coremark_240m/` | (none) | CoreMark benchmark |
+| `wifi_con_test` | `thing/wifi_con_test/` | GPIO 5 | WiFi scan, connect, LED blink |
+
+### Key differences from S3-N16R8
+
+| Aspect | S3-N16R8 | Thing |
+|--------|----------|-------|
+| SoC | ESP32-S3 (Xtensa LX7, dual-core) | ESP32 (Xtensa LX6, dual-core) |
+| Toolchain | `xtensa-esp32s3-elf-gcc` | `xtensa-esp32-elf-gcc` |
+| Flash | 16 MB (QIO, 80 MHz) | 4 MB (DIO, 40 MHz) |
+| Crystal | 40 MHz | 26 MHz (`CONFIG_XTAL_FREQ=26`) |
+| LED | WS2812 RGB on GPIO 48 (via RMT) | Blue LED on GPIO 5 (simple GPIO) |
+| USB bridge | CH343 UART bridge | CP2102 UART bridge |
+
+> **Note:** The ESP32 Thing runs on a **26 MHz crystal**; the ESP-IDF default
+> assumes 40 MHz, so the `sdkconfig.defaults` set `CONFIG_XTAL_FREQ=26`
+> (otherwise UART output is garbled and the boot log warns about a crystal
+> mismatch).
+
 ## C6 SuperMini (`c6-supermini/`)
 
 ESP32-C6 RISC-V projects, ported from C3 SuperMini.
@@ -170,7 +198,7 @@ Dhrystone 2.1 benchmark ported from RP2040, running on ESP32-C3 at 160 MHz. Prin
 ## Dependencies
 
 - ESP-IDF **v6.0.2** (path: `\espidf\.espressif\v6.0.2\esp-idf`)
-- Targets: `esp32c3` (C3 boards), `esp32s3` (S3-N16R8, S3-N8R8 OV3660), `esp32c6` (C6 SuperMini)
+- Targets: `esp32c3` (C3 boards), `esp32s3` (S3-N16R8, S3-N8R8 OV3660), `esp32c6` (C6 SuperMini), `esp32` (Thing)
 
 ## Building
 
@@ -182,6 +210,7 @@ Build manually with `idf.py build`, or use the auto-detect flash script:
 .\flash.ps1 s3-n16r8\s3_empty -Monitor     # flash + monitor
 .\flash.ps1 s3-n8r8-ov3660\s3_empty        # S3-N8R8 OV3660 board
 .\flash.ps1 c3-supermini\c3_empty build    # build only
+.\flash.ps1 thing\blink                    # ESP32 Thing board
 
 # Manual (if auto-detect has multiple ports)
 cd c3-supermini\c3_oled
@@ -205,12 +234,12 @@ Additional commands:
 
 ## Clock Configuration
 
-C3 and C6 projects use 160 MHz; S3-N16R8 and S3-N8R8 OV3660 use 240 MHz.
+C3 and C6 projects use 160 MHz; S3-N16R8, S3-N8R8 OV3660, and Thing use 240 MHz.
 
-| Clock | C3 / C6 default | S3 default | Config symbol |
-|-------|-----------------|------------|---------------|
+| Clock | C3 / C6 default | S3 / Thing default | Config symbol |
+|-------|-----------------|--------------------|---------------|
 | CPU | 160 MHz | 240 MHz | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` |
-| XTAL | 40 MHz | 40 MHz | `CONFIG_XTAL_FREQ=40` |
+| XTAL | 40 MHz | 40 MHz (Thing: 26 MHz) | `CONFIG_XTAL_FREQ` |
 | APB | 80 MHz | 80 MHz | Derived from CPU / 2 |
 
 To change: `idf.py menuconfig` → Component config → ESP Timer → CPU frequency.
